@@ -22,31 +22,40 @@ class TweetReader():
         item = re.sub(r'(?<=^)(\d+)(?=($|\s))', 'dddddd', item).strip()
         return item
 
+    def splitMeta(self, item):
+        # split with Capital letter
+        return re.sub(r'(?=[A-Z])', ' ', item).strip()
+
     def cleanText(self, text):
         cl_text = ''
-        retweet = []
+        users = []
+        topics = []
         items = re.split(r' ', text.strip())
         for item in items:
             if item == u'RT' or item.startswith(u'http'):
                 continue
-            elif item.startswith(u'@') or item.startswith(u'#'):
+            elif item.startswith(u'@'):
                 item = self.cleanItem(item)
-                retweet.append(item)
+                users.append(item)
+            elif item.startswith(u'#'):
+                item = self.cleanItem(item)
+                topics.append(item)
             else:
                 item = self.cleanItem(item)
                 cl_text += item + ' '
-        return cl_text.strip(), retweet
+        return cl_text.strip(), users, topics
 
     def parseTweet(self, tweet):
         # [id, text, [@, #], [mentions], [urls]]
         parsed_tweet = {}
         parsed_tweet[u'id'] = tweet[u'id']
-        text, retweet = self.cleanText(tweet[u'text'])
+        text, users, topics = self.cleanText(tweet[u'text'])
         p_text = ''
         # [[pos, length, string, type],...], pos : [0, len(text)-1]
         mentions = []
         mention = ''
         mention_type = ''
+        topics_cl = []
         if self.ner_parser:
             tagged_text = self.ner_parser.tag(text.split())
             for items in tagged_text:
@@ -55,26 +64,51 @@ class TweetReader():
                         mention += ' '+items[0]
                     else:
                         if len(mention) > 0:
-                            mentions[mention] = mention_type
+                            mentions.append([0, len(p_text), mention, mention_type])
+                            p_text += mention + ' '
                         mention = items[0]
                         mention_type = items[1]
                 else:
                     if len(mention) > 0:
-                        mentions.append([len(p_text), len(mention), mention, mention_type])
+                        mentions.append([0, len(p_text), mention, mention_type])
                         p_text += mention + ' '
                     p_text += items[0] + ' '
                     mention = ''
                     mention_type = ''
             if len(mention) > 0:
-                mentions.append([len(p_text), len(mention), mention, mention_type])
+                mentions.append([0, len(p_text), mention, mention_type])
                 p_text += mention
-            for m in retweet:
+            mention = ''
+            mention_type = ''
+            topic_count = 0
+            for m in topics:
+                topic_count += 1
                 tagged_m = self.ner_parser.tag(m.split())
+                tmp_text = ''
                 for tm in tagged_m:
                     if tm[1] == u'PERSON' or tm[1] == u'ORGANIZATION' or tm[1] == u'LOCATION':
-                        mentions.append([-1, len(tm[0]), tm[0], tm[1]])
+                        if len(mention_type) > 0 and tm[1] == mention_type:
+                            mention += ' ' + tm[0]
+                        else:
+                            if len(mention) > 0:
+                                mentions.append([topic_count, len(tmp_text), mention, mention_type])
+                                tmp_text += mention + ' '
+                            mention = tm[0]
+                            mention_type = tm[1]
+                    else:
+                        if len(mention) > 0:
+                            mentions.append([topic_count, len(tmp_text), mention, mention_type])
+                            tmp_text += mention + ' '
+                        tmp_text += tm[0] + ' '
+                        mention = ''
+                        mention_type = ''
+                if len(mention) > 0:
+                    mentions.append([topic_count, len(tmp_text), mention, mention_type])
+                    tmp_text += mention
+                topics_cl.append(tmp_text.strip())
         parsed_tweet[u'text'] = p_text.strip()
-        parsed_tweet[u'meta'] = retweet
+        parsed_tweet[u'users'] = users
+        parsed_tweet[u'hashtags'] = topics_cl
         parsed_tweet[u'mentions'] = mentions
         return parsed_tweet
 
@@ -98,12 +132,18 @@ class TweetReader():
                     # filter no photo
                     # u'type' not in tweet[u'entities'][u'media'] or u'photo' != tweet[u'entities'][u'media'][u'type']
                     tw_media = tweet[u'entities'][u'media']
-                    photo_urls = []
+                    photo_urls = set()
                     for m in tw_media:
                         if u'type' in m and u'photo' == m[u'type'] and u'media_url' in m:
-                            photo_urls.append(m[u'media_url'])
+                            photo_urls.add(m[u'media_url'])
+                    if u'extended_entities' in tweet and u'media' in tweet[u'extended_entities']:
+                        tw_media = tweet[u'extended_entities'][u'media']
+                        for m in tw_media:
+                            if u'type' in m and u'photo' == m[u'type'] and u'media_url' in m:
+                                photo_urls.add(m[u'media_url'])
                     if len(photo_urls) <= 0:
                         continue
+                    photo_urls = list(photo_urls)
                     # parse person, org and loc
                     parsed_tweet = self.parseTweet(tweet)
                     # data[u'entities'][u'media'][u'media_url']
@@ -118,6 +158,11 @@ if __name__ == '__main__':
     raw_tweet_file = '/data/m1/cyx/VTLinking/data/tweets.json'
     tweet_file = '/data/m1/cyx/VTLinking/data/tweets_cl.json'
     parser_model = '/data/m1/cyx/VTLinking/data/english.all.3class.distsim.crf.ser.gz'
+    '''
+    raw_tweet_file = '/Users/ethan/Documents/data/VTLinking/tweets.json'
+    tweet_file = '/Users/ethan/Documents/data/VTLinking/tweets_cl.json'
+    parser_model = '/Users/ethan/Documents/data/VTLinking/english.all.3class.distsim.crf.ser.gz'
+    '''
     tr = TweetReader()
     tr.setNERParser(nltk.tag.StanfordNERTagger(parser_model))
     tr.extractTweet(raw_tweet_file, tweet_file)
