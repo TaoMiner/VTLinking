@@ -115,9 +115,9 @@ class TweetReader():
         print 'successful extract %d tweets from %d raw data!' % (actual_tweet_num, line_count)
 
 if __name__ == '__main__':
-    raw_tweet_file = '/Users/ethan/Documents/data/VTLinking/tweets.json'
-    tweet_file = '/Users/ethan/Documents/data/VTLinking/tweets_cl.json'
-    parser_model = '/Users/ethan/Documents/data/VTLinking/english.all.3class.distsim.crf.ser.gz'
+    raw_tweet_file = '/data/m1/cyx/VTLinking/data/tweets.json'
+    tweet_file = '/data/m1/cyx/VTLinking/data/tweets_cl.json'
+    parser_model = '/data/m1/cyx/VTLinking/data/english.all.3class.distsim.crf.ser.gz'
     tr = TweetReader()
     tr.setNERParser(nltk.tag.StanfordNERTagger(parser_model))
     tr.extractTweet(raw_tweet_file, tweet_file)
