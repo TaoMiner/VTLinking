@@ -3,6 +3,7 @@ import codecs
 import nltk
 import string
 import regex as re
+
 punc = re.compile('[%s]' % re.escape(string.punctuation))
 
 class TweetReader():
@@ -22,67 +23,106 @@ class TweetReader():
         item = re.sub(r'(?<=^)(\d+)(?=($|\s))', 'dddddd', item).strip()
         return item
 
-    def splitMeta(self, item):
+    def splitCapitalWords(self, item):
         # split with Capital letter
         return re.sub(r'(?=[A-Z])', ' ', item).strip()
 
-    def cleanText(self, text):
-        cl_text = ''
-        users = []
-        topics = []
-        items = re.split(r' ', text.strip())
-        for item in items:
-            if item == u'RT' or item.startswith(u'http'):
-                continue
-            elif item.startswith(u'@'):
-                item = self.cleanItem(item)
-                users.append(item)
-            elif item.startswith(u'#'):
-                item = self.cleanItem(item)
-                topics.append(item)
-            else:
-                item = self.cleanItem(item)
-                cl_text += item + ' '
-        return cl_text.strip(), users, topics
+    # extract text, mention users, hashtags
+    def extractMeta(self, tweet):
+        # extract user mentions and hasgtags
+        indices_del = []
+        at_users = []
+        hashtags = []
+        if u'entities' in tweet and u'user_mentions' in tweet[u'entities']:
+            for um in tweet[u'entities'][u'user_mentions']:
+                if u'id_str' in um and u'name' in um and u'indices' in um:
+                    at_users.append([um[u'id_str'], um[u'name']])
+                    indices_del.append(um[u'indices'])
+        if u'entities' in tweet and u'hashtags' in tweet[u'entities']:
+            for htag in tweet[u'entities'][u'hashtags']:
+                if u'text' in htag and u'indices' in htag:
+                    hashtags.append(htag[u'text'])
+                    indices_del.append(htag[u'indices'])
+        # delete user mentions and hashtags in text
+        tmp_text = tweet[u'text']
+        text = ''
+        start_pos = 0
+        end_pos = 0
+        for ind in indices_del:
+            if len(ind) != 2 : continue
+            end_pos = ind[0]
+            text += tmp_text[start_pos:end_pos]
+            start_pos = ind[1]
+        if start_pos < len(tmp_text):
+            end_pos = len(tmp_text)
+            text += tmp_text[start_pos:end_pos]
+        # delete hyperlinks
+        text = re.sub(r'http(.*?)( |$)', ' ', text.strip())
+        # split sentences
+        sentences = re.split(r'[\.,?!]', text)
+        sentences_cl = []
+        for sent in sentences:
+            sent_cl = []
+            items = sent.split()
+            for item in items:
+                if item == u'RT' or len(item) < 1:
+                    continue
+                else:
+                    sent_cl.append(item)
+            if len(sent_cl) > 0:
+                sentences_cl.append(sent_cl)
+        return sentences_cl, at_users, hashtags
 
     def parseTweet(self, tweet):
-        # [id, text, [@, #], [mentions], [urls]]
+        # [id, text, user, [at_users,...], [#,...], [mentions], [photo_urls]]
         parsed_tweet = {}
         parsed_tweet[u'id'] = tweet[u'id']
-        text, users, topics = self.cleanText(tweet[u'text'])
+        user = ['','']
+        if u'user' in tweet and u'id_str' in tweet[u'user']:
+            user[0] = tweet[u'user'][u'id_str']
+        if u'user' in tweet and u'name' in tweet[u'user']:
+            user[1] = tweet[u'user'][u'name']
+        parsed_tweet[u'user'] = user
+        sents, at_users, hashtags = self.extractMeta(tweet)
         p_text = ''
         # [[pos, length, string, type],...], pos : [0, len(text)-1]
         mentions = []
         mention = ''
         mention_type = ''
-        topics_cl = []
         if self.ner_parser:
-            tagged_text = self.ner_parser.tag(text.split())
-            for items in tagged_text:
-                if items[1] == u'PERSON' or items[1] == u'ORGANIZATION' or items[1] == u'LOCATION':
-                    if len(mention_type) > 0 and items[1] == mention_type:
-                        mention += ' '+items[0]
+            # extract mentions from text
+            for sent in sents:
+                tagged_text = self.ner_parser.tag(sent)
+                for items in tagged_text:
+                    if items[1] == u'PERSON' or items[1] == u'ORGANIZATION' or items[1] == u'LOCATION':
+                        if len(mention_type) > 0 and items[1] == mention_type:
+                            mention += ' '+items[0]
+                        else:
+                            if len(mention) > 0:
+                                mentions.append([0, len(p_text), mention, mention_type])
+                                p_text += mention + ' '
+                            mention = items[0]
+                            mention_type = items[1]
                     else:
                         if len(mention) > 0:
                             mentions.append([0, len(p_text), mention, mention_type])
                             p_text += mention + ' '
-                        mention = items[0]
-                        mention_type = items[1]
-                else:
-                    if len(mention) > 0:
-                        mentions.append([0, len(p_text), mention, mention_type])
-                        p_text += mention + ' '
-                    p_text += items[0] + ' '
+                        p_text += items[0] + ' '
+                        mention = ''
+                        mention_type = ''
+                if len(mention) > 0:
+                    mentions.append([0, len(p_text), mention, mention_type])
+                    p_text += mention + ' '
                     mention = ''
                     mention_type = ''
-            if len(mention) > 0:
-                mentions.append([0, len(p_text), mention, mention_type])
-                p_text += mention
+                p_text += '. '
+            # extract mentions from hashtags
+            tags_cl = []
             mention = ''
             mention_type = ''
-            topic_count = 0
-            for m in topics:
-                topic_count += 1
+            tag_count = 0
+            for m in hashtags:
+                tag_count += 1
                 tagged_m = self.ner_parser.tag(m.split())
                 tmp_text = ''
                 for tm in tagged_m:
@@ -91,24 +131,24 @@ class TweetReader():
                             mention += ' ' + tm[0]
                         else:
                             if len(mention) > 0:
-                                mentions.append([topic_count, len(tmp_text), mention, mention_type])
+                                mentions.append([tag_count, len(tmp_text), mention, mention_type])
                                 tmp_text += mention + ' '
                             mention = tm[0]
                             mention_type = tm[1]
                     else:
                         if len(mention) > 0:
-                            mentions.append([topic_count, len(tmp_text), mention, mention_type])
+                            mentions.append([tag_count, len(tmp_text), mention, mention_type])
                             tmp_text += mention + ' '
                         tmp_text += tm[0] + ' '
                         mention = ''
                         mention_type = ''
                 if len(mention) > 0:
-                    mentions.append([topic_count, len(tmp_text), mention, mention_type])
+                    mentions.append([tag_count, len(tmp_text), mention, mention_type])
                     tmp_text += mention
-                topics_cl.append(tmp_text.strip())
+                tags_cl.append(tmp_text.strip())
         parsed_tweet[u'text'] = p_text.strip()
-        parsed_tweet[u'users'] = users
-        parsed_tweet[u'hashtags'] = topics_cl
+        parsed_tweet[u'user_mentions'] = at_users
+        parsed_tweet[u'hashtags'] = tags_cl
         parsed_tweet[u'mentions'] = mentions
         return parsed_tweet
 
@@ -124,7 +164,7 @@ class TweetReader():
                         print 'has processd %d lines!' % line_count
                     tweet = json.loads(line)
                     # filter non english
-                    if u'metadata' not in tweet or u'iso_language_code' not in tweet[u'metadata'] or u'en' != tweet[u'metadata'][u'iso_language_code']:
+                    if u'lang' not in tweet or u'en' != tweet[u'lang']:
                         continue
                     # filter no media
                     if u'entities' not in tweet or u'media' not in tweet[u'entities']:
@@ -155,6 +195,7 @@ class TweetReader():
         print 'successful extract %d tweets from %d raw data!' % (actual_tweet_num, line_count)
 
 if __name__ == '__main__':
+
     raw_tweet_file = '/data/m1/cyx/VTLinking/data/tweets.json'
     tweet_file = '/data/m1/cyx/VTLinking/data/tweets_cl.json'
     parser_model = '/data/m1/cyx/VTLinking/data/english.all.3class.distsim.crf.ser.gz'
@@ -166,3 +207,4 @@ if __name__ == '__main__':
     tr = TweetReader()
     tr.setNERParser(nltk.tag.StanfordNERTagger(parser_model))
     tr.extractTweet(raw_tweet_file, tweet_file)
+    # print tr.ner_parser.tag('Cummings: Trump made up story about a canceled meeting'.split())
